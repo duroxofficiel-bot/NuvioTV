@@ -1,0 +1,117 @@
+name: Fork release (VF patch)
+
+# Vérifie toutes les 6 h si Nuvio a publié une nouvelle version stable.
+# Si oui : récupère le tag upstream, applique le patch VF, compile en release
+# signée, et publie une release dans CE fork (que l'app saura auto-installer).
+# Si non : le job s'arrête en quelques secondes.
+
+on:
+  schedule:
+    - cron: "0 */6 * * *"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+concurrency:
+  group: fork-release
+  cancel-in-progress: false
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    env:
+      GH_TOKEN: ${{ github.token }}
+      UPSTREAM: NuvioMedia/NuvioTV
+
+    steps:
+      - name: Check latest upstream stable release
+        id: upstream
+        run: |
+          set -euo pipefail
+          tag=$(gh api "repos/${UPSTREAM}/releases" \
+            --jq '[.[] | select(.draft == false and .prerelease == false)][0].tag_name')
+          if [ -z "$tag" ] || [ "$tag" = "null" ]; then
+            echo "Aucune release stable upstream"; exit 1
+          fi
+          echo "tag=${tag}" >> "$GITHUB_OUTPUT"
+          if gh release view "${tag}" --repo "${GITHUB_REPOSITORY}" >/dev/null 2>&1; then
+            echo "already=true" >> "$GITHUB_OUTPUT"
+            echo "Déjà publié : ${tag} — rien à faire"
+          else
+            echo "already=false" >> "$GITHUB_OUTPUT"
+            echo "Nouvelle version à builder : ${tag}"
+          fi
+
+      - name: Checkout fork
+        if: steps.upstream.outputs.already == 'false'
+        uses: actions/checkout@v4
+
+      - name: Checkout upstream tag
+        if: steps.upstream.outputs.already == 'false'
+        run: |
+          set -euo pipefail
+          mkdir -p /tmp/fork-scripts
+          cp -r scripts /tmp/fork-scripts/ 2>/dev/null || true
+          git remote add upstream "https://github.com/${UPSTREAM}.git" 2>/dev/null || true
+          git fetch --depth 1 upstream "refs/tags/${{ steps.upstream.outputs.tag }}"
+          git checkout -f FETCH_HEAD
+          echo "HEAD = $(git rev-parse --short HEAD) ($(git describe --tags --always))"
+
+      - name: Apply VF patch
+        if: steps.upstream.outputs.already == 'false'
+        env:
+          FORK_OWNER: ${{ github.repository_owner }}
+          FORK_REPO: ${{ github.event.repository.name }}
+        run: |
+          set -euo pipefail
+          python3 /tmp/fork-scripts/scripts/apply_vf_patch.py
+
+      - name: Write local.properties and keystore
+        if: steps.upstream.outputs.already == 'false'
+        run: |
+          set -euo pipefail
+          printf '%s' "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > "$RUNNER_TEMP/fork-release.jks"
+          {
+            echo "NUVIO_SUPABASE_URL=${{ secrets.NUVIO_SUPABASE_URL }}"
+            echo "NUVIO_SUPABASE_ANON_KEY=${{ secrets.NUVIO_SUPABASE_ANON_KEY }}"
+            echo "NUVIO_SUPABASE_FALLBACK_URL=${{ secrets.NUVIO_SUPABASE_FALLBACK_URL }}"
+            echo "TRAILER_API_URL=${{ secrets.TRAILER_API_URL }}"
+            echo "INTRODB_API_URL=${{ secrets.INTRODB_API_URL }}"
+            echo "NUVIO_RELEASE_STORE_FILE=$RUNNER_TEMP/fork-release.jks"
+            echo "NUVIO_RELEASE_KEY_ALIAS=${{ secrets.KEYSTORE_ALIAS }}"
+            echo "NUVIO_RELEASE_KEY_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }}"
+            echo "NUVIO_RELEASE_STORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }}"
+          } > local.properties
+          echo "local.properties écrit ($(wc -l < local.properties) lignes)"
+
+      - name: Set up Java
+        if: steps.upstream.outputs.already == 'false'
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+          cache: gradle
+
+      - name: Build release APKs
+        if: steps.upstream.outputs.already == 'false'
+        run: |
+          set -euo pipefail
+          chmod +x gradlew
+          ./gradlew :app:assembleFullRelease --stacktrace
+
+      - name: Publish release in this fork
+        if: steps.upstream.outputs.already == 'false'
+        run: |
+          set -euo pipefail
+          tag="${{ steps.upstream.outputs.tag }}"
+          mapfile -t apks < <(find app/build/outputs/apk/full/release -maxdepth 1 -type f -name '*.apk' | sort)
+          if [ "${#apks[@]}" -eq 0 ]; then
+            echo "Aucun APK produit"; exit 1
+          fi
+          printf 'APK produits :\n%s\n' "${apks[*]}"
+          gh release create "${tag}" "${apks[@]}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --title "${tag} — Nuvio + VF first" \
+            --notes "Build automatique de Nuvio ${tag} avec le tri des bandes-annonces (VF avant VOST). Patch appliqué par CI." \
+            --latest
