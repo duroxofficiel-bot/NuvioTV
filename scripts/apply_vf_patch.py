@@ -3,15 +3,15 @@
 Applique le patch "bandes-annonces VF d'abord" sur une copie du code upstream NuvioTV.
 
 Deux modifications :
-  1. TmdbMetadataService.kt : ajoute un rang de préférence doublage/sous-titrage
-     par langue (approx. via Locale.getDefault()) et l'insère en tête du tri.
-  2. app/build.gradle.kts : pointe l'updater vers ce fork (GITHUB_OWNER / GITHUB_REPO).
+  1. TmdbMetadataService.kt : ajoute un rang de preference doublage/sous-titrage
+     par langue (approx. via Locale.getDefault()) et l'insere en tete du tri.
+  2. app/build.gradle.kts : pointe l'updater vers ce fork (GITHUB_OWNER / GITHUB_REPO)
+     et force le type de keystore PKCS12.
 
-Le script échoue (exit 1) si une ancre est introuvable -> le workflow passe au rouge
-et l'utilisateur est prévenu, au lieu de publier un build sans le patch.
+Le script echoue (exit 1) si une ancre est introuvable -> le workflow passe au rouge
+et l'utilisateur est prevenu, au lieu de publier un build sans le patch.
 """
 import os
-import re
 import sys
 
 OWNER = os.environ.get("FORK_OWNER", "")
@@ -64,53 +64,70 @@ def patch_tmdb():
         src = fh.read()
 
     if "preferredDubRank" in src:
-        print("TmdbMetadataService.kt : patch déjà présent, rien à faire")
-        return True
-
-    if RANK_ANCHOR not in src:
-        print(f"ERREUR: ancre '{RANK_ANCHOR}' introuvable dans {TMDB_PATH}")
+        print("TmdbMetadataService.kt : patch deja present")
+    elif RANK_ANCHOR not in src or SORT_ANCHOR not in src:
+        print(f"ERREUR: ancres introuvables dans {TMDB_PATH}")
         return False
-    if SORT_ANCHOR not in src:
-        print(f"ERREUR: ancre '{SORT_ANCHOR}' introuvable dans {TMDB_PATH}")
-        return False
-
-    src = src.replace(RANK_ANCHOR, HELPERS + "    " + RANK_ANCHOR, 1)
-    src = src.replace(SORT_ANCHOR, SORT_REPLACEMENT, 1)
-
-    with open(TMDB_PATH, "w", encoding="utf-8") as fh:
-        fh.write(src)
-    print("TmdbMetadataService.kt : patch appliqué")
+    else:
+        src = src.replace(RANK_ANCHOR, HELPERS + "    " + RANK_ANCHOR, 1)
+        src = src.replace(SORT_ANCHOR, SORT_REPLACEMENT, 1)
+        with open(TMDB_PATH, "w", encoding="utf-8") as fh:
+            fh.write(src)
+        print("TmdbMetadataService.kt : patch applique")
     return True
+
+
+def rewrite_buildconfig_line(src, key, value):
+    out = []
+    changed = False
+    for line in src.splitlines(keepends=True):
+        if "buildConfigField" in line and f'"{key}"' in line:
+            indent = line[: len(line) - len(line.lstrip())]
+            newline = f'{indent}buildConfigField("String", "{key}", "\\"{value}\\"")'
+            out.append(newline + ("\r\n" if line.endswith("\r\n") else "\n"))
+            changed = True
+        else:
+            out.append(line)
+    return "".join(out), changed
+
+
+def ensure_pkcs12(src):
+    if 'storeType' in src:
+        print("build.gradle.kts : storeType deja present")
+        return src, True
+    marker = 'create("release") {'
+    if marker not in src:
+        print("ERREUR: bloc signingConfigs.create(\"release\") introuvable")
+        return src, False
+    src = src.replace(marker, marker + '\n            storeType = "PKCS12"', 1)
+    print('build.gradle.kts : storeType = "PKCS12" ajoute')
+    return src, True
 
 
 def patch_gradle():
     if not OWNER or not REPO:
-        print("ERREUR: FORK_OWNER / FORK_REPO non définis")
+        print("ERREUR: FORK_OWNER / FORK_REPO non definis")
         return False
     with open(GRADLE_PATH, encoding="utf-8") as fh:
         src = fh.read()
-    new = re.sub(
-        r'buildConfigField\("String",\s*"GITHUB_OWNER",\s*"[^"]*"\)',
-        f'buildConfigField("String", "GITHUB_OWNER", "\\"{OWNER}\\"")',
-        src,
-    )
-    new = re.sub(
-        r'buildConfigField\("String",\s*"GITHUB_REPO",\s*"[^"]*"\)',
-        f'buildConfigField("String", "GITHUB_REPO", "\\"{REPO}\\"")',
-        new,
-    )
-    if new == src:
-        print("ERREUR: GITHUB_OWNER/GITHUB_REPO non remplacés")
+
+    src, ok1 = rewrite_buildconfig_line(src, "GITHUB_OWNER", OWNER)
+    src, ok2 = rewrite_buildconfig_line(src, "GITHUB_REPO", REPO)
+    if not (ok1 and ok2):
+        print("ERREUR: GITHUB_OWNER/GITHUB_REPO non remplaces")
         return False
+    src, ok3 = ensure_pkcs12(src)
+    if not ok3:
+        return False
+
     with open(GRADLE_PATH, "w", encoding="utf-8") as fh:
-        fh.write(new)
+        fh.write(src)
     print(f"build.gradle.kts : updater -> {OWNER}/{REPO}")
     return True
 
 
 def main():
-    ok = patch_tmdb() and patch_gradle()
-    if not ok:
+    if not (patch_tmdb() and patch_gradle()):
         sys.exit(1)
 
 
