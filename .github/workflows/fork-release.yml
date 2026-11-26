@@ -3,7 +3,6 @@ name: Fork release (VF patch)
 # Vérifie toutes les 6 h si Nuvio a publié une nouvelle version stable.
 # Si oui : récupère le tag upstream, applique le patch VF, compile en release
 # signée, et publie une release dans CE fork (que l'app saura auto-installer).
-# Si non : le job s'arrête en quelques secondes.
 
 on:
   schedule:
@@ -56,7 +55,7 @@ jobs:
           git remote add upstream "https://github.com/${UPSTREAM}.git" 2>/dev/null || true
           git fetch --depth 1 upstream "refs/tags/${{ steps.upstream.outputs.tag }}"
           git checkout -f FETCH_HEAD
-          echo "HEAD = $(git rev-parse --short HEAD) ($(git describe --tags --always))"
+          echo "HEAD = $(git rev-parse --short HEAD)"
 
       - name: Apply VF patch
         if: steps.upstream.outputs.already == 'false'
@@ -67,29 +66,38 @@ jobs:
           set -euo pipefail
           python3 /tmp/fork-scripts/scripts/apply_vf_patch.py
 
-      - name: Write local.properties and keystore
+      - name: Prepare keystore and properties
         if: steps.upstream.outputs.already == 'false'
         run: |
           set -euo pipefail
-          printf '%s' "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > "$RUNNER_TEMP/fork-release.jks"
-          ALIAS=$(keytool -list -keystore "$RUNNER_TEMP/fork-release.jks" -storepass "${{ secrets.KEYSTORE_PASSWORD }}" 2>/dev/null | awk -F', ' '/Alias name:/{sub("Alias name: ","",$1); print $1; exit}')
+          KS="$RUNNER_TEMP/fork-release.jks"
+          PASS="${{ secrets.KEYSTORE_PASSWORD }}"
+          printf '%s' "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > "$KS"
+          echo "--- contenu du keystore ---"
+          keytool -list -keystore "$KS" -storepass "$PASS" 2>&1 | head -n 12 || true
+          ALIAS=$(keytool -list -keystore "$KS" -storepass "$PASS" 2>/dev/null \
+            | grep -m1 'PrivateKeyEntry' | cut -d',' -f1 | sed 's/^ *//; s/ *$//')
+          if [ -z "$ALIAS" ]; then
+            ALIAS=$(keytool -list -v -keystore "$KS" -storepass "$PASS" 2>/dev/null \
+              | sed -n 's/^Alias name: *//p' | head -n1)
+          fi
           if [ -z "$ALIAS" ]; then
             echo "Impossible de detecter l'alias du keystore" >&2
             exit 1
           fi
-          echo "Alias detecte : ${ALIAS}"
+          echo "Alias detecte : [$ALIAS]"
           {
             echo "NUVIO_SUPABASE_URL=${{ secrets.NUVIO_SUPABASE_URL }}"
             echo "NUVIO_SUPABASE_ANON_KEY=${{ secrets.NUVIO_SUPABASE_ANON_KEY }}"
             echo "NUVIO_SUPABASE_FALLBACK_URL=${{ secrets.NUVIO_SUPABASE_FALLBACK_URL }}"
             echo "TRAILER_API_URL=${{ secrets.TRAILER_API_URL }}"
             echo "INTRODB_API_URL=${{ secrets.INTRODB_API_URL }}"
-            echo "NUVIO_RELEASE_STORE_FILE=$RUNNER_TEMP/fork-release.jks"
+            echo "NUVIO_RELEASE_STORE_FILE=$KS"
             echo "NUVIO_RELEASE_KEY_ALIAS=${ALIAS}"
-            echo "NUVIO_RELEASE_KEY_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }}"
-            echo "NUVIO_RELEASE_STORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }}"
+            echo "NUVIO_RELEASE_KEY_PASSWORD=${PASS}"
+            echo "NUVIO_RELEASE_STORE_PASSWORD=${PASS}"
           } > local.properties
-          echo "local.properties écrit ($(wc -l < local.properties) lignes)"
+          echo "local.properties : $(wc -l < local.properties) lignes"
 
       - name: Set up Java
         if: steps.upstream.outputs.already == 'false'
