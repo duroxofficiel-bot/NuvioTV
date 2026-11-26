@@ -72,6 +72,12 @@ jobs:
         run: |
           set -euo pipefail
           printf '%s' "${{ secrets.KEYSTORE_BASE64 }}" | base64 -d > "$RUNNER_TEMP/fork-release.jks"
+          ALIAS=$(keytool -list -keystore "$RUNNER_TEMP/fork-release.jks" -storepass "${{ secrets.KEYSTORE_PASSWORD }}" 2>/dev/null | awk -F', ' '/Alias name:/{sub("Alias name: ","",$1); print $1; exit}')
+          if [ -z "$ALIAS" ]; then
+            echo "Impossible de detecter l'alias du keystore" >&2
+            exit 1
+          fi
+          echo "Alias detecte : ${ALIAS}"
           {
             echo "NUVIO_SUPABASE_URL=${{ secrets.NUVIO_SUPABASE_URL }}"
             echo "NUVIO_SUPABASE_ANON_KEY=${{ secrets.NUVIO_SUPABASE_ANON_KEY }}"
@@ -79,7 +85,7 @@ jobs:
             echo "TRAILER_API_URL=${{ secrets.TRAILER_API_URL }}"
             echo "INTRODB_API_URL=${{ secrets.INTRODB_API_URL }}"
             echo "NUVIO_RELEASE_STORE_FILE=$RUNNER_TEMP/fork-release.jks"
-            echo "NUVIO_RELEASE_KEY_ALIAS=${{ secrets.KEYSTORE_ALIAS }}"
+            echo "NUVIO_RELEASE_KEY_ALIAS=${ALIAS}"
             echo "NUVIO_RELEASE_KEY_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }}"
             echo "NUVIO_RELEASE_STORE_PASSWORD=${{ secrets.KEYSTORE_PASSWORD }}"
           } > local.properties
