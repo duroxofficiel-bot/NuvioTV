@@ -90,6 +90,7 @@ jobs:
             echo "NUVIO_SUPABASE_URL=${{ secrets.NUVIO_SUPABASE_URL }}"
             echo "NUVIO_SUPABASE_ANON_KEY=${{ secrets.NUVIO_SUPABASE_ANON_KEY }}"
             echo "NUVIO_SUPABASE_FALLBACK_URL=${{ secrets.NUVIO_SUPABASE_FALLBACK_URL }}"
+            echo "TMDB_API_KEY=${{ secrets.TMDB_API_KEY }}"
             echo "TRAILER_API_URL=${{ secrets.TRAILER_API_URL }}"
             echo "INTRODB_API_URL=${{ secrets.INTRODB_API_URL }}"
             echo "NUVIO_RELEASE_STORE_FILE=$KS"
